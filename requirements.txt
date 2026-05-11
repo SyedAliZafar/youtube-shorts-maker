@@ -1,6 +1,9 @@
 # YouTube Shorts Maker – dependencies
 # Install with: pip install -r requirements.txt
 
+# Environment
+python-dotenv>=1.0.0
+
 # AI providers (install both, or just the one you need)
 anthropic>=0.25.0        # for --provider claude  (default)
 openai>=1.30.0           # for --provider deepseek (uses OpenAI-compatible API)

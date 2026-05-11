@@ -18,9 +18,12 @@ import argparse
 from pathlib import Path
 from dataclasses import dataclass
 
+from dotenv import load_dotenv
 import cv2
 import whisper
 import numpy as np
+
+load_dotenv()
 
 # ─────────────────────────────────────────────
 #  Config
@@ -40,8 +43,20 @@ CAPTION_COLORS    = [           # cycles per speaker / segment
 OUTPUT_DIR = Path("shorts_output")
 TEMP_DIR   = Path("temp")
 
+def _detect_available_provider() -> str:
+    """Auto-detect which AI provider to use based on available API keys."""
+    has_claude = bool(os.getenv("ANTHROPIC_API_KEY"))
+    has_deepseek = bool(os.getenv("DEEPSEEK_API_KEY"))
+
+    if has_deepseek and not has_claude:
+        return "deepseek"
+    elif has_claude:
+        return "claude"
+    else:
+        return "claude"  # fallback default, will error if not set
+
 # AI provider: "claude" | "deepseek"  (overridden by --provider CLI flag)
-AI_PROVIDER = "claude"
+AI_PROVIDER = _detect_available_provider()
 
 
 # ─────────────────────────────────────────────
@@ -179,12 +194,16 @@ def _select_via_deepseek(prompt: str) -> list[Segment]:
             "DEEPSEEK_API_KEY is not set. "
             "Export it before running: export DEEPSEEK_API_KEY='your-key'"
         )
-    client   = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
-    response = client.chat.completions.create(
-        model    = "deepseek-chat",
-        messages = [{"role": "user", "content": prompt}],
-        max_tokens = 1024,
-    )
+    client   = OpenAI(api_key=api_key, base_url="https://api.deepseek.com", timeout=30.0)
+    try:
+        response = client.chat.completions.create(
+            model    = "deepseek-chat",
+            messages = [{"role": "user", "content": prompt}],
+            max_tokens = 1024,
+        )
+    except Exception as e:
+        print(f"❌ DeepSeek API error: {e}")
+        raise
     return _parse_segments(response.choices[0].message.content)
 
 
@@ -201,7 +220,7 @@ def select_highlights(transcript: str, video_duration: float) -> list[Segment]:
         segments = _select_via_claude(prompt)   # default
 
     for i, seg in enumerate(segments, 1):
-        print(f"  [{i}] {seg.start:.1f}s–{seg.end:.1f}s | "{seg.title}"")
+        print(f"  [{i}] {seg.start:.1f}s–{seg.end:.1f}s | '{seg.title}'")
         print(f"       → {seg.reason}")
     return segments
 
@@ -295,9 +314,9 @@ def extract_clip(video_path: str, seg: Segment, index: int) -> str:
 # ─────────────────────────────────────────────
 #  Step 6 – Build ASS subtitle file (coloured)
 # ─────────────────────────────────────────────
-def build_ass(words: list[Word], seg: Segment, color_hex: str, index: int) -> str:
+def build_ass(words: list[Word], seg: Segment, color_hex: str, index: int, title: str) -> str:
     """
-    Generate an ASS subtitle file with coloured word-level captions.
+    Generate an ASS subtitle file with coloured word-level captions and a title.
     Words are grouped into short lines of ≤5 words.
     """
     # ASS colour format: &H00BBGGRR  (no alpha = &H00)
@@ -316,6 +335,7 @@ WrapStyle: 0
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,Arial Black,72,{ass_color},&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,60,60,120,1
+Style: Title,Arial Black,52,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,2,2,60,60,100,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -341,6 +361,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         end   = ts(chunk[-1].end)
         events.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}")
 
+    # Add title as persistent event spanning the full clip duration
+    clip_end = ts(seg.end)
+    events.insert(0, f"Dialogue: 0,0:00:00.00,{clip_end},Title,,0,0,0,,{title}")
+
     with open(ass_path, "w", encoding="utf-8") as f:
         f.write(header + "\n".join(events) + "\n")
 
@@ -356,21 +380,13 @@ def burn_captions_and_overlays(clip_path: str, ass_path: str,
 
     duration = seg.end - seg.start
 
-    # Build a progress-bar + title-card via drawtext / drawbox
-    title_safe = seg.title.replace("'", "\\'").replace(":", "\\:")
-
     vf_parts = [
-        # subtitles
+        # subtitles (includes captions + title from ASS file)
         f"ass={ass_path}",
         # top gradient bar (decorative)
         "drawbox=x=0:y=0:w=iw:h=8:color=#FF6B6B@0.9:t=fill",
         # title card at bottom
         f"drawbox=x=0:y=ih-180:w=iw:h=180:color=black@0.55:t=fill",
-        (
-            f"drawtext=text='{title_safe}':"
-            f"fontsize=52:fontcolor=white:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
-            f"x=(w-text_w)/2:y=h-140:shadowcolor=black:shadowx=2:shadowy=2"
-        ),
         # progress bar
         (
             f"drawbox=x=0:y=ih-12:w=iw:h=12:color=#333333@0.8:t=fill,"
@@ -380,6 +396,10 @@ def burn_captions_and_overlays(clip_path: str, ass_path: str,
 
     vf = ",".join(vf_parts)
 
+    # Convert paths to forward slashes for FFmpeg
+    ass_path_fwd = ass_path.replace("\\", "/")
+    vf = vf.replace(ass_path, ass_path_fwd)
+
     cmd = [
         "ffmpeg", "-y", "-i", clip_path,
         "-vf", vf,
@@ -387,7 +407,12 @@ def burn_captions_and_overlays(clip_path: str, ass_path: str,
         "-c:a", "aac", "-b:a", "192k",
         out_path
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        print(f"❌ FFmpeg failed: {e}")
+        print(f"   stderr: {e.stderr.decode('utf-8', errors='ignore')}")
+        raise
     print(f"  🎨 Captions & overlays burned → {out_path}")
     return out_path
 
@@ -424,7 +449,7 @@ def make_shorts(video_path: str):
     for i, seg in enumerate(segments, 1):
         color   = CAPTION_COLORS[(i - 1) % len(CAPTION_COLORS)]
         clip    = extract_clip(video_path, seg, i)
-        ass     = build_ass(words, seg, color, i)
+        ass     = build_ass(words, seg, color, i, seg.title)
         final   = burn_captions_and_overlays(clip, ass, seg, i)
         results.append(final)
 
@@ -445,8 +470,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--provider",
         choices=["claude", "deepseek"],
-        default="claude",
-        help="AI provider for highlight selection (default: claude)",
+        default=AI_PROVIDER,
+        help=f"AI provider for highlight selection (default: {AI_PROVIDER})",
     )
     args = parser.parse_args()
 

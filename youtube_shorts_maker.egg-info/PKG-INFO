@@ -1,0 +1,12 @@
+Metadata-Version: 2.4
+Name: youtube-shorts-maker
+Version: 1.0.0
+Summary: Convert local video files into YouTube Shorts using AI
+Author-email: Syed Ali Zafar <syedalizafar0@gmail.com>
+Requires-Python: >=3.9
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: anthropic>=0.25.0
+Requires-Dist: openai>=1.30.0
+Requires-Dist: openai-whisper>=20231117
+Requires-Dist: opencv-python>=4.9.0
+Requires-Dist: numpy>=1.26.0
