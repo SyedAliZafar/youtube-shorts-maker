@@ -1,0 +1,15 @@
+# YouTube Shorts Maker – dependencies
+# Install with: pip install -r requirements.txt
+
+# AI providers (install both, or just the one you need)
+anthropic>=0.25.0        # for --provider claude  (default)
+openai>=1.30.0           # for --provider deepseek (uses OpenAI-compatible API)
+
+# Transcription
+openai-whisper>=20231117
+
+# Computer vision
+opencv-python>=4.9.0
+numpy>=1.26.0
+
+# ffmpeg must be installed separately (see README)
